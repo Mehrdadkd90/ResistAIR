@@ -132,19 +132,6 @@ Credentials should be configured inside n8n Credentials Manager and not hardcode
 
 ---
 
-## Suggested Repository Files
-
-A simple repository may include:
-
-```text
-README.md
-workflow.json
-```
-
-Do not include `.env` files, API keys, service account private keys, or any confidential credentials.
-
----
-
 ## Future Improvements
 
 Possible future improvements include:
