@@ -1,4 +1,4 @@
-# ResistAI-RAI-Powered Image-Based Dispute Resolution Agent
+# ResistAIR _ AI-Powered Image-Based Dispute Resolution Agent
 
 ## Overview
 
