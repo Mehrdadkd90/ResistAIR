@@ -1,0 +1,1374 @@
+{
+  "name": "Airbnb Dispute Resolution",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "b8bb19c7-2fbb-4413-9923-42bf1e35433c",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        416
+      ],
+      "webhookId": "4ff633ef-b756-4bc8-a808-4f1f48c0b074",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst update = input.message ?? {};\nconst from = update.from ?? {};\nconst chat = update.chat ?? {};\nconst photos = update.photo ?? [];\nconst biggestPhoto = photos.length ? photos[photos.length - 1] : null;\nconst text = update.text ?? '';\nconst caption = update.caption ?? '';\nconst messageText = text || caption || '';\nconst normalized = messageText.trim().toLowerCase();\n\nreturn [\n  {\n    json: {\n      telegramMessageId: update.message_id ?? null,\n      chatId: chat.id ?? null,\n      chatType: chat.type ?? null,\n      userId: from.id ?? null,\n      username: from.username ?? '',\n      firstName: from.first_name ?? '',\n      lastName: from.last_name ?? '',\n      text,\n      caption,\n      messageText,\n      normalized,\n      hasPhoto: !!biggestPhoto,\n      photoFileId: biggestPhoto?.file_id ?? null,\n      rawUpdate: input,\n      receivedAt: new Date().toISOString(),\n    },\n  },\n];"
+      },
+      "id": "9c867975-82a6-4c05-9a1d-f7eea8551ba5",
+      "name": "Parse Telegram Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\n\nstaticData.sessions = staticData.sessions || {};\nstaticData.cases = staticData.cases || {};\n\nstaticData.knownReservations = {\n  \"R2001\": { propertyId: \"P1001\" },\n  \"R2002\": { propertyId: \"P1002\" },\n  \"R2003\": { propertyId: \"P1003\" },\n  \"R2004\": { propertyId: \"P1004\" },\n  \"R2005\": { propertyId: \"P1005\" },\n  \"R2006\": { propertyId: \"P1006\" },\n  \"R2007\": { propertyId: \"P1007\" },\n  \"R2008\": { propertyId: \"P1008\" },\n  \"R2009\": { propertyId: \"P1009\" },\n  \"R2010\": { propertyId: \"P1010\" },\n  \"R2011\": { propertyId: \"P1011\" },\n  \"R2012\": { propertyId: \"P1012\" },\n  \"R2013\": { propertyId: \"P1013\" },\n  \"R2014\": { propertyId: \"P1014\" },\n  \"R2015\": { propertyId: \"P1015\" },\n  \"R2016\": { propertyId: \"P1016\" },\n  \"R2017\": { propertyId: \"P1017\" },\n  \"R2018\": { propertyId: \"P1018\" },\n  \"R2019\": { propertyId: \"P1019\" },\n  \"R2020\": { propertyId: \"P1020\" }\n};\n\nconst item = $input.first().json;\nconst userId = String(item.userId ?? '');\nconst text = (item.text || '').trim();\nconst normalized = (item.normalized || '').trim().toLowerCase();\nconst hasPhoto = !!item.hasPhoto;\nconst fileId = item.photoFileId ?? null;\n\nfunction cleanId(value) {\n  return String(value || '').trim().replace(/\\s+/g, '').toUpperCase();\n}\n\nlet session = staticData.sessions[userId] || {\n  step: \"idle\",\n  reservationId: \"\",\n  propertyId: \"\",\n  role: \"\",\n  phase: \"\",\n  area: \"\"\n};\n\nfunction reply(action, replyText, extra = {}) {\n  staticData.sessions[userId] = session;\n  return [{ json: { ...item, action, replyText, session, ...extra } }];\n}\n\nif (normalized === '/cancel') {\n  delete staticData.sessions[userId];\n  return reply('send_message', 'Session cleared. Send /start to begin again.');\n}\n\nif (normalized === '/reset') {\n  // Erase all saved scores from memory\n  staticData.scoreboard = { hosts: {}, guests: {} };\n  return reply('send_message', '🧹 All penalty scores have been reset to 0. You can start testing from scratch!');\n}\n\nif (normalized === '/start') {\n  session = { step: \"await_reservation\", reservationId: \"\", propertyId: \"\", role: \"\", phase: \"\", area: \"\" };\n  staticData.sessions[userId] = session;\n  return reply('send_message', 'Please enter reservation ID (R2001–R2020).');\n}\n\nif (!staticData.sessions[userId]) {\n  return reply('send_message', 'Please send /start to begin.');\n}\n\nif (hasPhoto) {\n  if (session.step !== 'await_photo') {\n    return reply('send_message', 'Please complete steps before sending photo.');\n  }\n\n  const slotMap = {\n    'host|checkin': 'host_checkin',\n    'guest|checkin': 'guest_checkin',\n    'guest|checkout': 'guest_checkout',\n    'host|checkout': 'host_checkout'\n  };\n\n  const slot = slotMap[`${session.role}|${session.phase}`];\n\n  return [{\n    json: {\n      ...item,\n      action: 'accept_photo',\n      reservationId: session.reservationId,\n      propertyId: session.propertyId,\n      role: session.role,\n      phase: session.phase,\n      area: session.area,\n      slot,\n      photoFileId: fileId,\n      session\n    }\n  }];\n}\n\nif (session.step === 'await_reservation') {\n  const reservationId = cleanId(text);\n  const reservation = staticData.knownReservations[reservationId];\n\n  if (!reservation) {\n    return reply('send_message', 'Invalid reservation ID.');\n  }\n\n  session.reservationId = reservationId;\n  session.propertyId = reservation.propertyId;\n  session.step = 'await_phase';\n\n  return reply('ask_upload_type', `Reservation ${reservationId} confirmed. Choose upload type:`);\n}\n\nif (session.step === 'await_phase') {\n  let input = normalized.replace(/[_-]/g, '');\n\n  const mapping = {\n    guestcheckin: { role: 'guest', phase: 'checkin' },\n    guestcheckout: { role: 'guest', phase: 'checkout' },\n    hostcheckin: { role: 'host', phase: 'checkin' },\n    hostcheckout: { role: 'host', phase: 'checkout' }\n  };\n\n  if (!mapping[input]) {\n    return reply('ask_upload_type', 'Please select upload type.');\n  }\n\n  session.role = mapping[input].role;\n  session.phase = mapping[input].phase;\n  session.step = 'await_area';\n\n  return reply('ask_area', 'Choose area:');\n}\n\nif (session.step === 'await_area') {\n  const areaMap = {\n    kitchen: 'Kitchen',\n    mainhall: 'Main Hall',\n    bedroom: 'Bedroom',\n    toilet: 'Toilet',\n    yard: 'Yard'\n  };\n\n  const input = normalized.replace(/[_-]/g, '');\n\n  if (!areaMap[input]) {\n    return reply('ask_area', 'Please choose a valid area.');\n  }\n\n  session.area = areaMap[input];\n  session.step = 'await_photo';\n\n  const uploadLabelMap = {\n    'guest|checkin': 'GuestCheckin',\n    'guest|checkout': 'GuestCheckout',\n    'host|checkin': 'HostCheckin',\n    'host|checkout': 'HostCheckout'\n  };\n\n  const uploadLabel = uploadLabelMap[`${session.role}|${session.phase}`] || `${session.role}${session.phase}`;\nreturn reply('send_message', `Now upload photo for ${uploadLabel} in ${session.area}.`, { replyMarkup: { remove_keyboard: true } });\n}\n\nreturn reply('send_message', 'Session expired. Send /start again.');"
+      },
+      "id": "a49a4fa0-c081-4164-8407-7e20e064fe53",
+      "name": "Route Guided Conversation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2044727b-3c63-442f-b52f-87725bc7abff",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "ask_upload_type",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ask_upload_type"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "36f876af-4be2-4a41-9d69-25184e70c4c9",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "ask_area",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ask_area"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "send_message",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "bcb6aebd-462a-4c50-b171-ca8c6728db0a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "send_message"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "accept_photo",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "77224c1f-483d-489c-b6ec-b6b9850c4083"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "accept_photo"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e987d73e-fe15-41b5-b1f6-2d013fbb005d",
+      "name": "Action Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        608,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "replyMarkup": "replyKeyboard",
+        "replyKeyboardOptions": {},
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3a644d15-3213-4907-8ffc-7b25eb8e9eaf",
+      "name": "Send Bot Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        224
+      ],
+      "webhookId": "442700ca-f892-4366-bb29-b962d6d63a2b",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/getFile""sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.photoFileId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a312c0c6-c99b-4dae-9bdf-253a6dfc7185",
+      "name": "Telegram Get File Meta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.cases = staticData.cases || {};\nstaticData.sessions = staticData.sessions || {};\n\nconst original = $('Route Guided Conversation').first().json;\nconst response = $json;\nconst result = response.result || {};\nconst filePath = result.file_path;\n\nif (!filePath) {\n  return [{\n    json: {\n      ...original,\n      analysisReady: false,\n      replyText: 'I could not resolve the Telegram file path for this image.',\n      status: 'file_path_missing'\n    }\n  }];\n}\n\n// ⚠️ IMPORTANT: REPLACE THE TEXT BELOW WITH YOUR ACTUAL TELEGRAM BOT TOKEN\nconst botToken = \"8YOUR_TELEGRAM_BOT_TOKEN/getFile\";\nconst fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;\n\nconst reservationId = original.reservationId;\nconst propertyId = original.propertyId;\nconst role = original.role;\nconst phase = original.phase;\nconst area = original.area;\nconst slot = original.slot;\nconst userId = String(original.userId);\nconst chatId = String(original.chatId);\n\nconst caseId = `${propertyId || 'UNKNOWN'}__${reservationId}`;\nconst areaKey = `${caseId}__${area}`;\n\nif (!staticData.cases[areaKey]) {\n  staticData.cases[areaKey] = {\n    caseId,\n    propertyId,\n    reservationId,\n    area,\n    uploads: {},\n    history: []\n  };\n}\n\nstaticData.cases[areaKey].uploads[slot] = {\n  userId,\n  chatId,\n  role,\n  phase,\n  area,\n  reservationId,\n  propertyId,\n  fileId: original.photoFileId,\n  filePath,\n  fileUrl,\n  receivedAt: original.receivedAt\n};\n\nstaticData.cases[areaKey].history.push({\n  slot,\n  userId,\n  chatId,\n  receivedAt: original.receivedAt,\n  fileId: original.photoFileId\n});\n\nconst uploads = staticData.cases[areaKey].uploads;\n\nconst counterpartMap = {\n  guest_checkin: 'host_checkin',\n  host_checkin: 'guest_checkin',\n  guest_checkout: 'host_checkout',\n  host_checkout: 'guest_checkout'\n};\nconst displayMap = {\n  guest_checkin: 'Guest Check-in',\n  host_checkin: 'Host Check-in',\n  guest_checkout: 'Guest Check-out',\n  host_checkout: 'Host Check-out'\n};\nconst counterpartSlot = counterpartMap[slot];\nconst displayCounterpart = displayMap[counterpartSlot] || counterpartSlot;\nconst analysisReady = !!(counterpartSlot && uploads[slot] && uploads[counterpartSlot]);\n\nconst comparisonType =\n  (slot === 'guest_checkin' || slot === 'host_checkin')\n    ? 'checkin_vs_checkin'\n    : 'checkout_vs_checkout';\n\nconst session = staticData.sessions[userId] || {};\nsession.step = 'await_phase';\nsession.area = '';\nstaticData.sessions[userId] = session;\n\nreturn [{\n  json: {\n    ...original,\n    caseId,\n    areaKey,\n    fileUrl,\n    filePath,\n    analysisReady,\n    comparisonType,\n    counterpartSlot,\n    replyText: analysisReady\n      ? `Thanks. I now have both required images for ${area} in reservation ${reservationId}. Starting comparison.`\n      : `Photo saved for ${area}. Please wait until the ${displayCounterpart} uploads their image. We will return to you with the final results right after we receive their image of the same area.`,\n    current_slot_url: uploads[slot]?.fileUrl || '',\n    counterpart_slot_url: uploads[counterpartSlot]?.fileUrl || '',\n    host_checkin_url: uploads.host_checkin?.fileUrl || '',\n    guest_checkin_url: uploads.guest_checkin?.fileUrl || '',\n    guest_checkout_url: uploads.guest_checkout?.fileUrl || '',\n    host_checkout_url: uploads.host_checkout?.fileUrl || '',\n    counterpartChatId: uploads[counterpartSlot]?.chatId || ''\n  }\n}];"
+      },
+      "id": "514c2261-4992-44c7-8237-d00626ed26f5",
+      "name": "Store Upload And Check Readiness",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_PRIVATE_KEY",
+          "mode": "id"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "RawUploads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.receivedAt }}",
+            "property_id": "={{ $json.propertyId }}",
+            "reservation_id": "={{ $json.reservationId }}",
+            "case_id": "={{ $json.caseId }}",
+            "user_id": "={{ $json.userId }}",
+            "chat_id": "={{ $json.chatId }}",
+            "role": "={{ $json.role }}",
+            "phase": "={{ $json.phase }}",
+            "area": "={{ $json.area }}",
+            "slot": "={{ $json.slot }}",
+            "telegram_file_id": "={{ $json.photoFileId }}",
+            "telegram_file_path": "={{ $json.filePath }}",
+            "image_url": "={{ $json.fileUrl }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "property_id",
+              "displayName": "property_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "reservation_id",
+              "displayName": "reservation_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "case_id",
+              "displayName": "case_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "role",
+              "displayName": "role",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "phase",
+              "displayName": "phase",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "area",
+              "displayName": "area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "slot",
+              "displayName": "slot",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_file_id",
+              "displayName": "telegram_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_file_path",
+              "displayName": "telegram_file_path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "image_url",
+              "displayName": "image_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3c544aac-520e-4057-aa5c-7edca463eaf8",
+      "name": "Append Raw Upload",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1424,
+        416
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CxraPjI8GN1fxvts",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.analysisReady }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8fdc04f3-36da-4bc4-9c87-620c18e729bf",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1424,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Route Guided Conversation').first().json.chatId }}",
+        "text": "={{ $json.replyText || \"Photo saved successfully.\" }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "ae8bf723-573c-4cd6-8916-032faa949027",
+      "name": "Send Saved Ack",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1696,
+        416
+      ],
+      "webhookId": "ae8e9f4c-e237-4940-ac38-94ad5eb38d76",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.scoreboard = staticData.scoreboard || { hosts: {}, guests: {} };\nstaticData.caseSummaries = staticData.caseSummaries || {};\n\n// Get context from the readiness node\nconst context = $('Store Upload And Check Readiness').first().json;\nconst response = $json;\n\n// --- STEP 0: Check if we are waiting for a second image ---\nif (context.ready === false) {\n  const uploaderRole = context.role;\n  const area = context.area || \"this area\";\n  const uploadType = context.slot || \"initial\";\n  \n  const counterpartRoleDisplay = uploaderRole === 'host' ? 'Guest' : 'Host';\n  \n  const formatType = (str) => str.replace(/([A-Z])/g, ' $1').trim().replace(\"Checkin\", \"Check-in\").replace(\"Checkout\", \"Check-out\");\n  const displayUploadType = formatType(uploadType);\n\n  const waitingMessage = `✅ Photo saved for ${area} (${displayUploadType}).\\n\\nPlease wait until the ${counterpartRoleDisplay} uploads their corresponding image. We will return to you with the final results right after we receive their image of the same area.`;\n\n  return [{\n    json: {\n      ...context,\n      waiting: true,\n      replyText: waitingMessage,\n      final_decision: null\n    }\n  }];\n}\n\n// --- STEP 1: Extract and CLEAN the text from OpenAI ---\nlet rawText = response.choices?.[0]?.message?.content || \"\";\nrawText = rawText.replace(/```json/g, \"\").replace(/```/g, \"\").trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(rawText);\n} catch (e) {\n  const match = rawText.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    try {\n      parsed = JSON.parse(match[0]);\n    } catch {\n      parsed = null;\n    }\n  }\n}\n\nif (!parsed) {\n  parsed = {\n    same_area_confidence: 0,\n    manual_review_required: true,\n    comparison_type: context.comparisonType || 'unknown',\n    pair_comparison: { summary: 'Parsing Error', mismatch_found: false, likely_responsible_party: 'uncertain' },\n    final_decision: { responsible_party: 'uncertain', severity: 'low', host_score_delta: 0, guest_score_delta: 0, reasoning: 'Failed to parse AI response.' }\n  };\n}\n\n// 2. Score Calculation Logic (Normalized to -1 for awareness)\nconst hosts = staticData.scoreboard.hosts;\nconst guests = staticData.scoreboard.guests;\n\nconst propertyKey = context.propertyId || 'UNKNOWN_PROPERTY';\nconst reservationKey = context.reservationId || 'UNKNOWN_RESERVATION';\n\n// Normalize any negative score to -1 as per requirements\nlet hostDelta = parsed.final_decision?.host_score_delta || 0;\nlet guestDelta = parsed.final_decision?.guest_score_delta || 0;\n\nif (hostDelta < 0) hostDelta = -1;\nif (guestDelta < 0) guestDelta = -1;\n\n// Update static scoreboard\nhosts[propertyKey] = (hosts[propertyKey] || 0) + hostDelta;\nguests[reservationKey] = (guests[reservationKey] || 0) + guestDelta;\n\nconst hostTotal = hosts[propertyKey];\nconst guestTotal = guests[reservationKey];\n\n// 3. Status and Metadata\nconst responsibleParty = parsed.final_decision?.responsible_party || 'uncertain';\nconst severity = parsed.final_decision?.severity || 'none';\nconst initialReasoning = parsed.final_decision?.reasoning || '';\nconst sameAreaConfidence = parsed.same_area_confidence ?? 0;\nconst manualReviewRequired = !!parsed.manual_review_required;\nconst comparisonTypeRaw = parsed.comparison_type || context.comparisonType || 'unknown';\nconst comparisonType = comparisonTypeRaw.replace(/_/g, ' ');\n\n// 4. Map Image A/B to labels\nconst formatLabel = (str) => {\n  if (!str) return \"Unknown Photo\";\n  return str\n    .replace(/([A-Z])/g, ' $1')\n    .trim()\n    .replace(/Checkin/gi, \"Check-in\")\n    .replace(/Checkout/gi, \"Check-out\");\n};\n\nconst displayLabelA = formatLabel(context.slot);\nconst displayLabelB = formatLabel(context.counterpartSlot);\n\nconst reasoning = initialReasoning\n    .replace(/Image A/gi, displayLabelA)\n    .replace(/Image B/gi, displayLabelB)\n    .replace(/reference photo/gi, displayLabelA)\n    .replace(/baseline photo/gi, displayLabelA)\n    .replace(/comparison photo/gi, displayLabelB)\n    .replace(/current photo/gi, displayLabelB)\n    .replace(/_/g, ' ');\n\n// 5. Construct Notification Text\nconst uploaderRole = context.role; \nconst counterpartRole = uploaderRole === 'host' ? 'guest' : 'host';\n\nlet resultHeader = `📊 Inspection Result: ${context.area}`;\nconst isDispute = (comparisonTypeRaw.includes('baseline') || comparisonTypeRaw.includes('checkin')) && responsibleParty === 'host';\n\nif (isDispute) {\n    resultHeader = `✅ Dispute Confirmed: ${context.area}`;\n}\n\nconst baseText = [\n  resultHeader,\n  `----------------------------`,\n  `Comparison: ${displayLabelA} vs ${displayLabelB}`,\n  `At Fault: ${responsibleParty.toUpperCase()}`,\n  `Severity: ${severity.toUpperCase()}`,\n  `Reasoning: ${reasoning}`,\n  `----------------------------`,\n  `Host Total Score: ${hostTotal} (${hostDelta})`,\n  `Guest Total Score: ${guestTotal} (${guestDelta})`,\n  manualReviewRequired ? '\\nManual review recommended.' : ''\n].filter(Boolean).join('\\n');\n\n// 6. Educational Logic (Threshold: -5)\nconst THRESHOLD = -5;\n\nconst educationalContent = {\n  guest: \"\\n\\n🎓 *Educational Content for Guest:*\\nA great guest respects the property like their own home. To maintain a high score, please ensure all trash is disposed of, items are returned to their original places, and any accidental damage is reported immediately via the check-in/out photos.\",\n  host: \"\\n\\n🎓 *Educational Content for Host:*\\nA successful host provides a consistent experience. To improve your score, ensure every area is double-checked for cleanliness and maintenance before the guest arrives. Accurate baseline photos are your best protection.\"\n};\n\nlet uploaderEducation = \"\";\nlet counterpartEducation = \"\";\n\nif (uploaderRole === 'guest' && guestTotal <= THRESHOLD) uploaderEducation = educationalContent.guest;\nif (uploaderRole === 'host' && hostTotal <= THRESHOLD) uploaderEducation = educationalContent.host;\n\nif (counterpartRole === 'guest' && guestTotal <= THRESHOLD) counterpartEducation = educationalContent.guest;\nif (counterpartRole === 'host' && hostTotal <= THRESHOLD) counterpartEducation = educationalContent.host;\n\n// Dispute/Standard tips\nconst tipMap = {\n   guest: \"💡 Tip: Please leave areas as found and report any accidental damage early.\",\n   host: \"💡 Tip: Ensure areas are documented and cleaned immediately before check-in to avoid disputes.\"\n};\n\nlet uploaderTip = (responsibleParty === uploaderRole) ? tipMap[uploaderRole] : \"\";\nif (uploaderRole === 'guest' && responsibleParty === 'host' && isDispute) {\n    uploaderTip = \"✅ Your report has been noted. Records updated to protect your deposit.\";\n}\n\nconst uploaderText = baseText + (uploaderTip ? `\\n\\n${uploaderTip}` : '') + uploaderEducation;\nconst counterpartText = baseText + counterpartEducation;\n\n// 7. Final Case Summary Object\nconst caseSummary = {\n  receivedAt: new Date().toISOString(),\n  propertyId: context.propertyId,\n  reservationId: context.reservationId,\n  caseId: context.caseId,\n  area: context.area,\n  sameAreaConfidence,\n  manualReviewRequired,\n  finalResponsibleParty: responsibleParty,\n  severity,\n  hostScoreDelta: hostDelta,\n  guestScoreDelta: guestDelta,\n  hostTotalScore: hostTotal,\n  guestTotalScore: guestTotal,\n  comparisonType: comparisonTypeRaw,\n  reasoning,\n  replyText: uploaderText,\n  counterpartReplyText: counterpartText,\n  counterpartChatId: context.counterpartChatId \n};\n\nstaticData.caseSummaries[`${context.areaKey}__latest`] = caseSummary;\n\nreturn [{ json: { ...context, ...caseSummary, waiting: false } }];"
+      },
+      "id": "45fc668c-5e04-424c-9337-da47bd5305b1",
+      "name": "Parse Analysis And Update Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_PRIVATE_KEY",
+          "mode": "id"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "AreaAnalysis"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.receivedAt }}",
+            "property_id": "={{ $json.propertyId }}",
+            "reservation_id": "={{ $json.reservationId }}",
+            "case_id": "={{ $json.caseId }}",
+            "area": "={{ $json.area }}",
+            "same_area_confidence": "={{ $json.sameAreaConfidence }}",
+            "manual_review_required": "={{ $json.manualReviewRequired }}",
+            "final_responsible_party": "={{ $json.finalResponsibleParty }}",
+            "severity": "={{ $json.severity }}",
+            "reasoning": "={{ $json.reasoning }}",
+            "comparison_type": "={{ $json.comparisonType }}",
+            "pair_summary": "={{ $json.pairSummary }}",
+            "host_score_delta": "={{ $json.hostScoreDelta }}",
+            "guest_score_delta": "={{ $json.guestScoreDelta }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "property_id",
+              "displayName": "property_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reservation_id",
+              "displayName": "reservation_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "case_id",
+              "displayName": "case_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "area",
+              "displayName": "area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "same_area_confidence",
+              "displayName": "same_area_confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "manual_review_required",
+              "displayName": "manual_review_required",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "final_responsible_party",
+              "displayName": "final_responsible_party",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "host_score_delta",
+              "displayName": "host_score_delta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "guest_score_delta",
+              "displayName": "guest_score_delta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "comparison_type",
+              "displayName": "comparison_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pair_summary",
+              "displayName": "pair_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reasoning",
+              "displayName": "reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "bca26b81-4122-43d1-8a53-7261a63e19a8",
+      "name": "Append Area Analysis",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2336,
+        640
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CxraPjI8GN1fxvts",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_PRIVATE_KEY",
+          "mode": "id"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "CaseSummary"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.receivedAt }}",
+            "property_id": "={{ $json.propertyId }}",
+            "reservation_id": "={{ $json.reservationId }}",
+            "case_id": "={{ $json.caseId }}",
+            "area": "={{ $json.area }}",
+            "final_responsible_party": "={{ $json.finalResponsibleParty }}",
+            "severity": "={{ $json.severity }}",
+            "host_total_score": "={{ $json.hostTotalScore }}",
+            "guest_total_score": "={{ $json.guestTotalScore }}",
+            "host_policy_action": "={{ $json.hostPolicyAction }}",
+            "guest_policy_action": "={{ $json.guestPolicyAction }}",
+            "manual_review_required": "={{ $json.manualReviewRequired }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "property_id",
+              "displayName": "property_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "reservation_id",
+              "displayName": "reservation_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "case_id",
+              "displayName": "case_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "area",
+              "displayName": "area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "final_responsible_party",
+              "displayName": "final_responsible_party",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "host_total_score",
+              "displayName": "host_total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "guest_total_score",
+              "displayName": "guest_total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "host_policy_action",
+              "displayName": "host_policy_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "guest_policy_action",
+              "displayName": "guest_policy_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "manual_review_required",
+              "displayName": "manual_review_required",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "341ee17f-2780-4a01-a19b-419c88e99eea",
+      "name": "Append Case Summary",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2336,
+        832
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CxraPjI8GN1fxvts",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_OPENAI_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-5.5\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": [\n          {\n            \"type\": \"text\",\n            \"text\": \"You are a professional Airbnb inspection auditor. You will compare exactly two images.\\n\\n### INSPECTION ROLES DEFINED:\\n1. HostCheckin: The host proving the room is perfect before arrival.\\n2. GuestCheckin: The guest reporting issues/damage found immediately upon arrival.\\n3. GuestCheckout: The guest proving they left the room in good condition.\\n4. HostCheckout: The host reporting damage found after the guest has left.\\n\\n### JUDGMENT LOGIC (The Matrix):\\n- HostCheckin (A) vs GuestCheckin (B): If B shows damage not in A, the HOST is at fault (Failure to provide a clean/working room).\\n- HostCheckin (A) vs HostCheckout (B): If B shows damage not in A, the GUEST is at fault (New damage created during stay).\\n- GuestCheckin (A) vs GuestCheckout (B): If B shows damage not in A, the GUEST is at fault.\\n- GuestCheckout (A) vs HostCheckout (B): If B shows damage not in A, the GUEST is at fault (Hidden damage), UNLESS evidence is weak, then assign no blame.\\n\\n### SCORING RULES:\\n- Assign -1 to the responsible party for any confirmed mismatch.\\n- If evidence is weak or the area is different, assign 0.\\n\\n### OUTPUT FORMAT:\\nOutput ONLY strict JSON. No markdown backticks. No conversational text.\\n{\\n  \\\"comparison_type\\\": \\\"string\\\",\\n  \\\"final_decision\\\": {\\n    \\\"responsible_party\\\": \\\"host/guest/none\\\",\\n    \\\"host_score_delta\\\": number,\\n    \\\"guest_score_delta\\\": number,\\n    \\\"reasoning\\\": \\\"Explain using the specific role names (e.g., 'HostCheckin shows...')\\\"\\n  }\\n}\"\n          },\n          {\n            \"type\": \"text\",\n            \"text\": `CONTEXT: Reservation ${$json.reservationId}, Area ${$json.area}, Comparison Type ${$json.comparisonType}.`\n          },\n          {\n            \"type\": \"text\",\n            \"text\": `Image A (${$json.slot}):`\n          },\n          {\n            \"type\": \"image_url\",\n            \"image_url\": {\n              \"url\": $json.current_slot_data_url || $json.current_slot_url,\n              \"detail\": \"high\"\n            }\n          },\n          {\n            \"type\": \"text\",\n            \"text\": `Image B (${$json.counterpartSlot}):`\n          },\n          {\n            \"type\": \"image_url\",\n            \"image_url\": {\n              \"url\": $json.counterpart_slot_data_url || $json.counterpart_slot_url,\n              \"detail\": \"high\"\n            }\n          }\n        ]\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "id": "19edcd44-5e92-469c-8b30-7c994d2d6c05",
+      "name": "Analyze Images With OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "replyMarkup": "replyKeyboard",
+        "replyKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "GuestCheckin",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "GuestCheckout",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "HostCheckin",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "HostCheckout",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "replyKeyboardOptions": {},
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "5fcde6d7-784e-4104-a74e-3921c4412e13",
+      "name": "Send Upload Type Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        -160
+      ],
+      "webhookId": "442700ca-f892-4366-bb29-b962d6d63a2b",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "replyMarkup": "replyKeyboard",
+        "replyKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "kitchen",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "mainhall",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "bedroom",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "toilet",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "yard",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "replyKeyboardOptions": {},
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "06b1d048-29d7-4ce6-b26e-800a495a48d8",
+      "name": "Send Area Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        48
+      ],
+      "webhookId": "442700ca-f892-4366-bb29-b962d6d63a2b",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## User interaction layer (User Interface)\nHandles all communication with users:\n- receives messages/photos\n- sends instructions & results**",
+        "height": 448,
+        "width": 432,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -112,
+        144
+      ],
+      "typeVersion": 1,
+      "id": "8c1b783e-b938-4353-95c7-03a8ac0f3367",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## Conversation engine (Logic)\nHandles all communication with users:\nControls user flow:\nreservation → upload type → area → photo\nMaintains session state",
+        "height": 448,
+        "width": 224,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        336,
+        144
+      ],
+      "typeVersion": 1,
+      "id": "984779c8-fed4-4add-87cc-36027be70a49",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## Routing and control (Flow control)\nRoutes actions and decisions:\n- what to do next\n- when to run AI vs wait",
+        "height": 448,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        576,
+        144
+      ],
+      "typeVersion": 1,
+      "id": "47f8b3c1-8467-464a-9015-cabf19b5bcc5",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "## User interaction layer (User Interface)\nHandles all communication with users:\n- receives messages/photos\n- sends instructions & results**",
+        "height": 688,
+        "width": 288,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        848,
+        -320
+      ],
+      "typeVersion": 1,
+      "id": "5ca00817-5cd1-4c7f-b6b7-aa1474553e5c",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Image processing and matching)\nImage handling and matching\n- retrieves photo\n- stores upload\n- links tenant & landlord pairs",
+        "height": 320,
+        "width": 512,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        848,
+        416
+      ],
+      "typeVersion": 1,
+      "id": "708ecc23-5792-47d3-ab14-14771476c915",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "## Routing and control (Flow control)\nRoutes actions and decisions:\n- what to do next\n- when to run AI vs wait",
+        "height": 368,
+        "width": 224,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1392,
+        608
+      ],
+      "typeVersion": 1,
+      "id": "09542dc8-3ee9-4a8b-8119-148dbdeb5dd4",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "## Data Collection Layer\nData Storage\n- compares images\n- determines responsibility\n- stores results in database",
+        "height": 336,
+        "width": 224,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1392,
+        240
+      ],
+      "typeVersion": 1,
+      "id": "36ef8edd-395e-4345-bc91-6c72897b5093",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "## User interaction layer (User Interface)\nHandles all communication with users:\n- receives messages/photos\n- sends instructions & results**",
+        "height": 336,
+        "width": 288,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1664,
+        240
+      ],
+      "typeVersion": 1,
+      "id": "f2d5c857-0411-4266-a7b4-37bf6c027b0d",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## AI + Data Layer\nAI Analysis and Storage\n- compares images\n- determines responsibility\n- stores results in database",
+        "height": 432,
+        "width": 864,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1664,
+        624
+      ],
+      "typeVersion": 1,
+      "id": "1d84d56d-102c-4c3f-b3fa-dfc9addb7e23",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "## User interaction layer (User Interface)\nHandles all communication with users:\n- receives messages/photos\n- sends instructions & results**",
+        "height": 576,
+        "width": 304,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2224,
+        16
+      ],
+      "typeVersion": 1,
+      "id": "bc31ef5c-bf09-43fb-8bd1-714275b75b8d",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7163a747-dfc2-4f0e-a2b0-6156e4667870",
+      "name": "Uploader",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2320,
+        192
+      ],
+      "webhookId": "a213dff9-ce32-4268-b270-8cff9d1f2516",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.counterpartChatId }}",
+        "text": "={{ $json.counterpartReplyText }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f6ac25b0-ab29-4d07-8cec-97d5c485c140",
+      "name": "Counterpart",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2320,
+        400
+      ],
+      "webhookId": "a213dff9-ce32-4268-b270-8cff9d1f2516",
+      "credentials": {
+        "telegramApi": {
+          "id": "Ne4MWrGqWuJcKhUd",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst nodeHelpers = this?.helpers;\n\nif (!item.analysisReady) {\n  return [{ json: item }];\n}\n\nfunction inferMimeTypeFromUrl(url) {\n  const cleanUrl = String(url || '').split('?')[0].toLowerCase();\n  if (cleanUrl.endsWith('.png')) return 'image/png';\n  if (cleanUrl.endsWith('.webp')) return 'image/webp';\n  if (cleanUrl.endsWith('.gif')) return 'image/gif';\n  return 'image/jpeg';\n}\n\nasync function downloadAsDataUrl(url, label) {\n  if (!url || typeof url !== 'string') {\n    throw new Error(`${label} URL is missing.`);\n  }\n\n  let buffer;\n  let contentType = inferMimeTypeFromUrl(url);\n\n  if (typeof fetch === 'function') {\n    const response = await fetch(url);\n\n    if (!response.ok) {\n      throw new Error(`${label} download failed. HTTP ${response.status}: ${response.statusText}`);\n    }\n\n    const headerContentType = response.headers.get('content-type');\n    if (headerContentType && headerContentType.startsWith('image/')) {\n      contentType = headerContentType;\n    }\n\n    const arrayBuffer = await response.arrayBuffer();\n    buffer = Buffer.from(arrayBuffer);\n  } else if (nodeHelpers?.httpRequest) {\n    const response = await nodeHelpers.httpRequest({\n      method: 'GET',\n      url,\n      encoding: 'arraybuffer',\n      returnFullResponse: true,\n    });\n\n    const headerContentType = response.headers?.['content-type'] || response.headers?.['Content-Type'];\n    if (headerContentType && String(headerContentType).startsWith('image/')) {\n      contentType = headerContentType;\n    }\n\n    buffer = Buffer.from(response.body);\n  } else {\n    throw new Error('No download method is available in this n8n Code node.');\n  }\n\n  const cleanContentType = String(contentType).split(';')[0].trim() || inferMimeTypeFromUrl(url);\n  const base64 = buffer.toString('base64');\n\n  if (!base64 || base64.length < 100) {\n    throw new Error(`${label} image download returned empty or invalid data.`);\n  }\n\n  return `data:${cleanContentType};base64,${base64}`;\n}\n\nconst currentSlotDataUrl = await downloadAsDataUrl(item.current_slot_url, 'Image A');\nconst counterpartSlotDataUrl = await downloadAsDataUrl(item.counterpart_slot_url, 'Image B');\n\nreturn [\n  {\n    json: {\n      ...item,\n      current_slot_data_url: currentSlotDataUrl,\n      counterpart_slot_data_url: counterpartSlotDataUrl,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1616,
+        1024
+      ],
+      "id": "7d257479-8877-481b-ab26-617d46d59e02",
+      "name": "Prepare OpenAI Image Data URLs"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Telegram Update": {
+      "main": [
+        [
+          {
+            "node": "Route Guided Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Guided Conversation": {
+      "main": [
+        [
+          {
+            "node": "Action Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Action Switch": {
+      "main": [
+        [
+          {
+            "node": "Send Upload Type Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Area Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Bot Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Get File Meta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Get File Meta": {
+      "main": [
+        [
+          {
+            "node": "Store Upload And Check Readiness",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Upload And Check Readiness": {
+      "main": [
+        [
+          {
+            "node": "Append Raw Upload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready?": {
+      "main": [
+        [
+          {
+            "node": "Prepare OpenAI Image Data URLs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Saved Ack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis And Update Scores": {
+      "main": [
+        [
+          {
+            "node": "Append Area Analysis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append Case Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Uploader",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Counterpart",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Images With OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis And Update Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare OpenAI Image Data URLs": {
+      "main": [
+        [
+          {
+            "node": "Analyze Images With OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "1ed0760c-71a4-452b-be4f-ebd58e33c72d",
+  "meta": {
+    "instanceId": "a571ada48cc6a6b5e3c26a754da68bd284891055ef4b51b9c41a61f4409e6439"
+  },
+  "id": "ZUrNiNOeFBsoGkDx",
+  "tags": []
+}
